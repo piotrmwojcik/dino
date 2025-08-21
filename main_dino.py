@@ -128,6 +128,63 @@ def get_args_parser():
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     return parser
 
+import copy
+import torch.nn as nn
+from torchvision import models as tv
+
+
+def _build_torchvision_backbone(name: str, pretrained: bool = True):
+    """
+    Returns (model_without_classifier, embed_dim).
+    Handles common torchvision models (ResNet/DenseNet/EfficientNet/MobileNet/ViT).
+    """
+    # Instantiate with pretrained weights (new & old torchvision APIs)
+    if pretrained:
+        try:
+            weights = tv.get_model_weights(name).DEFAULT  # torchvision >= 0.13
+            model = tv.get_model(name, weights=weights)
+        except Exception:
+            model = tv.__dict__[name](pretrained=True)
+    else:
+        try:
+            model = tv.get_model(name, weights=None)
+        except Exception:
+            model = tv.__dict__[name]()
+
+    # Strip classifier head & get embedding dim
+    if hasattr(model, "fc") and isinstance(model.fc, nn.Linear):          # ResNet
+        embed_dim = model.fc.in_features
+        model.fc = nn.Identity()
+    elif hasattr(model, "classifier"):                                     # DenseNet/EfficientNet/MobileNet
+        head = model.classifier
+        if isinstance(head, nn.Linear):
+            embed_dim = head.in_features
+            model.classifier = nn.Identity()
+        elif isinstance(head, nn.Sequential):
+            # last Linear in the sequential
+            last_linear = next((m for m in reversed(head) if isinstance(m, nn.Linear)), None)
+            if last_linear is None:
+                raise RuntimeError(f"Can't find Linear in classifier of {name}")
+            embed_dim = last_linear.in_features
+            model.classifier = nn.Identity()
+        else:
+            raise RuntimeError(f"Unhandled classifier type in {name}: {type(head)}")
+    elif hasattr(model, "heads"):                                          # torchvision ViT
+        head = model.heads
+        if isinstance(head, nn.Linear):
+            embed_dim = head.in_features
+            model.heads = nn.Identity()
+        elif isinstance(head, nn.Sequential):
+            last_linear = next((m for m in reversed(head) if isinstance(m, nn.Linear)), None)
+            embed_dim = last_linear.in_features
+            model.heads = nn.Identity()
+        else:
+            raise RuntimeError(f"Unhandled heads type in {name}: {type(head)}")
+    else:
+        raise RuntimeError(f"Don't know how to strip classifier for {name}")
+
+    return model, embed_dim
+
 
 def train_dino(args):
     utils.init_distributed_mode(args)
@@ -174,9 +231,19 @@ def train_dino(args):
         embed_dim = student.embed_dim
     # otherwise, we check if the architecture is in torchvision models
     elif args.arch in torchvision_models.__dict__.keys():
-        student = torchvision_models.__dict__[args.arch]()
-        teacher = torchvision_models.__dict__[args.arch]()
-        embed_dim = student.fc.weight.shape[1]
+        # student from ImageNet-pretrained backbone
+        student_backbone, embed_dim = _build_torchvision_backbone(args.arch, pretrained=True)
+        # teacher starts as a copy (it will be synced to student right after DDP anyway)
+        teacher_backbone = copy.deepcopy(student_backbone)
+
+        student = utils.MultiCropWrapper(
+            student_backbone,
+            DINOHead(embed_dim, args.out_dim, use_bn=args.use_bn_in_head, norm_last_layer=args.norm_last_layer)
+        )
+        teacher = utils.MultiCropWrapper(
+            teacher_backbone,
+            DINOHead(embed_dim, args.out_dim, args.use_bn_in_head)
+        )
     else:
         print(f"Unknow architecture: {args.arch}")
 

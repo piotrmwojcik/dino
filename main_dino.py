@@ -167,6 +167,7 @@ def train_dino(args):
         embed_dim = student.embed_dim
     # if the network is a XCiT
     elif args.arch in torch.hub.list("facebookresearch/xcit:main"):
+        print('Architecture in xcit')
         student = torch.hub.load('facebookresearch/xcit:main', args.arch,
                                  pretrained=False, drop_path_rate=args.drop_path_rate)
         teacher = torch.hub.load('facebookresearch/xcit:main', args.arch, pretrained=False)

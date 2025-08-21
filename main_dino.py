@@ -32,6 +32,7 @@ from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
+from samples.input import DataAugmentationDINO_InpaintLocals, PairedMaskFolder
 from vision_transformer import DINOHead
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
@@ -194,12 +195,12 @@ def train_dino(args):
     cudnn.benchmark = True
 
     # ============ preparing data ... ============
-    transform = DataAugmentationDINO(
-        args.global_crops_scale,
-        args.local_crops_scale,
-        args.local_crops_number,
+    transform = DataAugmentationDINO_InpaintLocals(
+        global_crops_scale=tuple(args.global_crops_scale),
+        local_crops_scale=tuple(args.local_crops_scale),
+        local_crops_number=args.local_crops_number,
     )
-    dataset = datasets.ImageFolder(args.data_path, transform=transform)
+    dataset = PairedMaskFolder(args.data_path, transform=transform)
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,

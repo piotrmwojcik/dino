@@ -13,7 +13,6 @@
 # limitations under the License.
 import argparse
 import os
-import inspect
 import sys
 import datetime
 import time
@@ -210,7 +209,7 @@ def train_dino(args):
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True,
-        collate_fn=collate_views_ragged
+        collate_fn=collate_views_ragged,
     )
     print(f"Data loaded: there are {len(dataset)} images.")
 
@@ -370,73 +369,66 @@ def train_dino(args):
 
 
 def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loader,
-                    optimizer, lr_schedule, wd_schedule, momentum_schedule, epoch,
+                    optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
                     fp16_scaler, args):
-    """
-    Expects the DataLoader to yield:
-      images: list[Tensor] length M, where each is [B, 3, H, W] on CPU
-      boxes : list length M; each item is a list (len B) of ragged lists [[x,y,w,h], ...] in *view* pixels
-    `boxes` remain on CPU (ragged); we only pass them through to the loss if supported.
-    """
-    device = torch.device(args.gpu) if hasattr(args, "gpu") else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     metric_logger = utils.MetricLogger(delimiter="  ")
-    header = f"Epoch: [{epoch}/{args.epochs}]"
+    header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
+    for it, (images, boxes) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+        # update weight decay and learning rate according to their schedule
+        it = len(data_loader) * epoch + it  # global training iteration
+        for i, param_group in enumerate(optimizer.param_groups):
+            param_group["lr"] = lr_schedule[it]
+            if i == 0:  # only the first group is regularized
+                param_group["weight_decay"] = wd_schedule[it]
 
-    # Detect whether the loss accepts `boxes=...`
-    loss_accepts_boxes = "boxes" in inspect.signature(dino_loss).parameters
-
-    student.train()
-    teacher.eval()
-
-    for it_local, (images, boxes) in enumerate(metric_logger.log_every(data_loader, 10, header)):
-        # ---- schedulers (global iteration) ----
-        it = len(data_loader) * epoch + it_local
-        for i, pg in enumerate(optimizer.param_groups):
-            pg["lr"] = lr_schedule[it]
-            if i == 0:
-                pg["weight_decay"] = wd_schedule[it]
-
-        # ---- move images to device; keep ragged boxes on CPU ----
-        # images: list length M; convert each to device
-        images = [im.to(device, non_blocking=True) for im in images]
-
-        # ---- forward passes (teacher no-grad) ----
-        with torch.cuda.amp.autocast(enabled=args.fp16):
-            # student forward; many DINO impls accept list-of-views
+        # move images to gpu
+        images = [im.cuda(non_blocking=True) for im in images]
+        # teacher and student forward passes + compute dino loss
+        with torch.cuda.amp.autocast(fp16_scaler is not None):
+            teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
             student_output = student(images)
+            loss = dino_loss(student_output, teacher_output, epoch)
 
-            with torch.no_grad():
-                # EMA update for the teacher
-                m = momentum_schedule[it]
-                for param_q, param_k in zip(student.parameters(), teacher_without_ddp.parameters()):
-                    param_k.data.mul_(m).add_(param_q.data * (1.0 - m))
-                teacher_output = teacher(images)
+        if not math.isfinite(loss.item()):
+            print("Loss is {}, stopping training".format(loss.item()), force=True)
+            sys.exit(1)
 
-            # ---- loss (pass boxes if supported) ----
-            if loss_accepts_boxes:
-                loss, loss_dict = dino_loss(student_output, teacher_output, epoch=epoch, boxes=boxes)
-            else:
-                loss, loss_dict = dino_loss(student_output, teacher_output, epoch=epoch)
-
-        # ---- backward / step ----
-        optimizer.zero_grad(set_to_none=True)
-        if args.fp16:
+        # student update
+        optimizer.zero_grad()
+        param_norms = None
+        if fp16_scaler is None:
+            loss.backward()
+            if args.clip_grad:
+                param_norms = utils.clip_gradients(student, args.clip_grad)
+            utils.cancel_gradients_last_layer(epoch, student,
+                                              args.freeze_last_layer)
+            optimizer.step()
+        else:
             fp16_scaler.scale(loss).backward()
+            if args.clip_grad:
+                fp16_scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
+                param_norms = utils.clip_gradients(student, args.clip_grad)
+            utils.cancel_gradients_last_layer(epoch, student,
+                                              args.freeze_last_layer)
             fp16_scaler.step(optimizer)
             fp16_scaler.update()
-        else:
-            loss.backward()
-            optimizer.step()
 
-        # ---- logging ----
-        torch.cuda.synchronize(device) if device.type == "cuda" else None
-        metric_logger.update(loss=loss.item(), **{k: float(v) for k, v in loss_dict.items()})
+        # EMA update for the teacher
+        with torch.no_grad():
+            m = momentum_schedule[it]  # momentum parameter
+            for param_q, param_k in zip(student.module.parameters(), teacher_without_ddp.parameters()):
+                param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
 
-    # end epoch logging (optional)
+        # logging
+        torch.cuda.synchronize()
+        metric_logger.update(loss=loss.item())
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
+    # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
 
 class DINOLoss(nn.Module):
     def __init__(self, out_dim, ncrops, warmup_teacher_temp, teacher_temp,

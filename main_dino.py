@@ -33,7 +33,7 @@ from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
-from samples.input import DataAugmentationDINO_InpaintLocals, PairedMaskFolder
+from samples.input import DataAugmentationDINO_InpaintLocals, PairedMaskFolder, collate_views_ragged
 from vision_transformer import DINOHead
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
@@ -210,6 +210,7 @@ def train_dino(args):
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True,
+        collate_fn=collate_views_ragged
     )
     print(f"Data loaded: there are {len(dataset)} images.")
 

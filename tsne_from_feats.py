@@ -28,18 +28,12 @@ def load_feats_labels(feats_dir: Path) -> Tuple[torch.Tensor, torch.Tensor]:
 
 
 def _infer_idx_to_class_from_dataset_root(dataset_root: Optional[Path]) -> Optional[List[str]]:
-    """
-    Try to reconstruct class index → class name using an ImageFolder-style tree.
-    Accepts either the dataset root that contains 'train' or directly the 'train' directory.
-    """
     if dataset_root is None:
         return None
-
     train_dir = dataset_root / "train"
     base = train_dir if train_dir.exists() else dataset_root
     if not base.exists() or not base.is_dir():
         return None
-
     classes = sorted([d.name for d in base.iterdir() if d.is_dir()])
     return classes if classes else None
 
@@ -98,10 +92,11 @@ def select_indices_all_types(
     idx_to_class: List[str],
     per_class: int,
     max_total: Optional[int],
-    seed: int = 0
+    seed: int = 0,
+    excluded_names: Optional[List[str]] = None,   # <—— NEW
 ) -> Tuple[np.ndarray, List[str]]:
     """
-    Select indices from ALL classes.
+    Select indices from ALL classes, except those listed in `excluded_names`.
       - per_class > 0: sample up to that many per class
       - per_class <= 0: take ALL samples per class
     Optionally cap by max_total after concatenation.
@@ -114,6 +109,9 @@ def select_indices_all_types(
     if not idx_to_class or len(idx_to_class) < n_classes:
         idx_to_class = (idx_to_class + [f"class_{i}" for i in range(len(idx_to_class), n_classes)]) if idx_to_class else [f"class_{i}" for i in range(n_classes)]
 
+    # normalize excluded names to lowercase for exact-match comparisons
+    excluded_set = set([s.lower() for s in (excluded_names or [])])
+
     # group indices per class
     cls_to_indices: Dict[int, List[int]] = {}
     for idx, c in enumerate(labels_np):
@@ -121,6 +119,10 @@ def select_indices_all_types(
 
     selected_indices: List[int] = []
     for c_idx, pool in sorted(cls_to_indices.items()):
+        c_name = idx_to_class[c_idx] if c_idx < len(idx_to_class) else f"class_{c_idx}"
+        if c_name.lower() in excluded_set:  # <—— skip excluded classes
+            continue
+
         pool_arr = np.array(pool)
         if per_class is None or per_class <= 0 or len(pool_arr) <= per_class:
             pick = pool_arr
@@ -201,7 +203,7 @@ def run_tsne(
         handles.append(plt.Line2D([], [], color=color, marker='o', linestyle='', markersize=6))
         texts.append(cname)
     plt.legend(handles, texts, loc="best", fontsize=8, frameon=True)
-    plt.title("t-SNE of features (all classes)")
+    plt.title("t-SNE of features (excluded: Unclassified, Opal_690)")
     plt.tight_layout()
     png_path = out_dir / f"{fname_prefix}.png"
     plt.savefig(png_path)
@@ -212,7 +214,7 @@ def run_tsne(
 
 
 def main():
-    ap = argparse.ArgumentParser("t-SNE from precomputed features (ALL classes)")
+    ap = argparse.ArgumentParser("t-SNE from precomputed features (exclude specific classes)")
     ap.add_argument("--feats-dir", type=str, required=True,
                     help="Directory containing trainfeat.pth and trainlabels.pth")
     ap.add_argument("--dataset-root", type=str, default=None,
@@ -220,7 +222,7 @@ def main():
     ap.add_argument("--class-map-json", type=str, default=None,
                     help="Optional JSON mapping (idx->name or name->idx) to resolve class names")
     ap.add_argument("--per-class", type=int, default=-1,
-                    help="Max samples per class; set <=0 to use ALL from each class")
+                    help="Max samples per class; set <=0 to use ALL from each included class")
     ap.add_argument("--max-total", type=int, default=None,
                     help="Optional global cap on total samples (applied after per-class sampling)")
     ap.add_argument("--pca-dim", type=int, default=50, help="PCA dimension before t-SNE (0 to disable)")
@@ -249,12 +251,16 @@ def main():
     if not idx_to_class or len(idx_to_class) < n_classes:
         idx_to_class = (idx_to_class + [f"class_{i}" for i in range(len(idx_to_class), n_classes)]) if idx_to_class else [f"class_{i}" for i in range(n_classes)]
 
+    # Exclude these classes (case-insensitive exact name match)
+    EXCLUDED = ["Unclassified", "Opal_690"]
+
     sel_idx, idx_to_class = select_indices_all_types(
         labels=labels_t,
         idx_to_class=idx_to_class,
         per_class=args.per_class,
         max_total=args.max_total,
-        seed=args.seed
+        seed=args.seed,
+        excluded_names=EXCLUDED,  # <—— pass exclusions
     )
 
     X = feats_np[sel_idx]

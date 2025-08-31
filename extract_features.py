@@ -128,7 +128,7 @@ if __name__ == '__main__':
                         help="Keep features on GPU (set False to store on CPU).")
     parser.add_argument('--arch', default='vit_small', type=str, help='Architecture')
     parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
-    parser.add_argument("--checkpoint_key", default="teacher", type=str,
+    parser.add_argument("--checkpoint_key", default="student", type=str,
                         help='Key to use in the checkpoint (example: "teacher")')
     parser.add_argument('--dump_features', default=None,
                         help='Path to save computed train features/labels; empty for no saving')

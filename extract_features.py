@@ -25,7 +25,7 @@ def extract_feature_pipeline(args):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    train_dir = os.path.join(args.data_path, "train")
+    train_dir = os.path.join(args.data_path)
     dataset_train = ReturnIndexDataset(train_dir, transform=transform)
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train,

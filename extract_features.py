@@ -92,6 +92,7 @@ def extract_features(model, data_loader, device, keep_on_device=True, multiscale
     dst_device = device if keep_on_device else torch.device("cpu")
 
     for samples, index in data_loader:
+        print('Processing: ', index)
         samples = samples.to(device, non_blocking=True)
         index = index.to(device, non_blocking=True)
 

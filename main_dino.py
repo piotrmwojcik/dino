@@ -216,7 +216,7 @@ def train_dino(args):
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True,
-        collate_fn=collate_views_ragged,
+        #collate_fn=collate_views_ragged,
     )
     print(f"Data loaded: there are {len(dataset)} images.")
 

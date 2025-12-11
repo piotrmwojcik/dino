@@ -208,7 +208,11 @@ def train_dino(args):
         args.local_crops_scale,
         args.local_crops_number,
     )
-    dataset = datasets.ImageFolder(args.data_path, transform=transform)
+    dataset = datasets.ImageFolder(
+        args.data_path,
+        transform=transform,
+        is_valid_file=lambda path: "mask" not in path.lower()
+    )
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,
@@ -515,7 +519,7 @@ class DataAugmentationDINO(object):
 
         # first global crop
         self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(448, scale=global_crops_scale,
+            transforms.RandomResizedCrop(224, scale=global_crops_scale,
                                          interpolation=Image.BICUBIC),
             flip_and_brightness_contrast,
             utils.GaussianBlur(1.0),
@@ -524,7 +528,7 @@ class DataAugmentationDINO(object):
 
         # second global crop
         self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(448, scale=global_crops_scale,
+            transforms.RandomResizedCrop(224, scale=global_crops_scale,
                                          interpolation=Image.BICUBIC),
             flip_and_brightness_contrast,
             utils.GaussianBlur(0.1),
@@ -535,7 +539,7 @@ class DataAugmentationDINO(object):
         # transformation for the local small crops
         self.local_crops_number = local_crops_number
         self.local_transfo = transforms.Compose([
-            transforms.RandomResizedCrop(192, scale=local_crops_scale,
+            transforms.RandomResizedCrop(96, scale=local_crops_scale,
                                          interpolation=Image.BICUBIC),
             flip_and_brightness_contrast,
             utils.GaussianBlur(p=0.5),

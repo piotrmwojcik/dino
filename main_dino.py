@@ -498,61 +498,88 @@ class DINOLoss(nn.Module):
         self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
 
 
+class _RepeatTo3Channels:
+    """Convert a (1,H,W) tensor to (3,H,W) by repeating the channel."""
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        return x.repeat(3, 1, 1)
+
+
 class DataAugmentationDINO(object):
-    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number):
-        # For grayscale images: keep flip + brightness/contrast jitter only
-        flip_and_brightness_contrast = transforms.Compose([
+    """
+    DINO augmentations adapted for grayscale microscopy:
+    - Work in 1-channel grayscale for photometric transforms
+    - Normalize with single-channel mean/std (default 0.5/0.5)
+    - Repeat to 3 channels at the end for ViT backbones
+    """
+    def __init__(
+        self,
+        global_crops_scale,
+        local_crops_scale,
+        local_crops_number,
+        image_size=224,
+        local_crop_size=96,
+        mean=(0.5,),
+        std=(0.5,),
+        brightness=0.4,
+        contrast=0.4,
+    ):
+        # Grayscale-friendly photometric jitter (no hue/saturation)
+        self.flip_and_brightness_contrast = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.4, contrast=0.4)],
+                [transforms.ColorJitter(brightness=brightness, contrast=contrast)],
                 p=0.8
             ),
         ])
 
-        # Convert single-channel grayscale -> 3 channels, then normalize as usual
-        normalize = transforms.Compose([
-            transforms.Grayscale(num_output_channels=3),  # repeat channel to get (3, H, W)
+        # Convert to 1ch -> tensor -> normalize -> repeat to 3ch
+        self.normalize = transforms.Compose([
+            transforms.Grayscale(num_output_channels=1),
             transforms.ToTensor(),
-            transforms.Normalize((0.485, 0.456, 0.406),
-                                 (0.229, 0.224, 0.225)),
+            transforms.Normalize(mean, std),
+            _RepeatTo3Channels(),
         ])
 
         # first global crop
         self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale,
-                                         interpolation=Image.BICUBIC),
-            flip_and_brightness_contrast,
+            transforms.RandomResizedCrop(
+                image_size, scale=global_crops_scale, interpolation=Image.BICUBIC
+            ),
+            self.flip_and_brightness_contrast,
             utils.GaussianBlur(1.0),
-            normalize,
+            self.normalize,
         ])
 
         # second global crop
         self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale,
-                                         interpolation=Image.BICUBIC),
-            flip_and_brightness_contrast,
+            transforms.RandomResizedCrop(
+                image_size, scale=global_crops_scale, interpolation=Image.BICUBIC
+            ),
+            self.flip_and_brightness_contrast,
             utils.GaussianBlur(0.1),
             utils.Solarization(0.2),
-            normalize,
+            self.normalize,
         ])
 
-        # transformation for the local small crops
+        # local crops
         self.local_crops_number = local_crops_number
         self.local_transfo = transforms.Compose([
-            transforms.RandomResizedCrop(96, scale=local_crops_scale,
-                                         interpolation=Image.BICUBIC),
-            flip_and_brightness_contrast,
+            transforms.RandomResizedCrop(
+                local_crop_size, scale=local_crops_scale, interpolation=Image.BICUBIC
+            ),
+            self.flip_and_brightness_contrast,
             utils.GaussianBlur(p=0.5),
-            normalize,
+            self.normalize,
         ])
 
     def __call__(self, image):
-        crops = []
-        crops.append(self.global_transfo1(image))
-        crops.append(self.global_transfo2(image))
-        for _ in range(self.local_crops_number):
-            crops.append(self.local_transfo(image))
+        crops = [
+            self.global_transfo1(image),
+            self.global_transfo2(image),
+        ]
+        crops.extend(self.local_transfo(image) for _ in range(self.local_crops_number))
         return crops
+
 
 
 if __name__ == '__main__':

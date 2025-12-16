@@ -116,7 +116,7 @@ def get_args_parser():
     parser.add_argument('--local_crops_scale', type=float, nargs='+', default=(0.05, 0.4),
         help="""Scale range of the cropped image before resizing, relatively to the origin image.
         Used for small local view cropping of multi-crop.""")
-    parser.add_argument('--image-size', type=int, default=224, help="""Input image size""")
+    #parser.add_argument('--image-size', type=int, default=224, help="""Input image size""")
 
     # Misc
     parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
@@ -208,7 +208,7 @@ def train_dino(args):
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
-        image_size=args.image_size
+        #image_size=args.image_size
     )
     dataset = datasets.ImageFolder(
         args.data_path,
